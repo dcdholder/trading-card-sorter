@@ -20,12 +20,8 @@ TEXT_BOX_HEIGHT_PERCENT = 0.9048
 PERCENT_MATCH_THRESHOLD = 0.5
 
 def takePhoto( filename ):
-	#these commands force a consistent
-	os.system("v4l2-ctl -d 0 -c focus_auto=0 >> dump.txt") #TODO: figure out why this is complaining
-	os.system("v4l2-ctl -d 0 -c focus_absolute=" + str(FOCUS) + " >> dump.txt")
-
 	pygame.camera.init()
-	cam = pygame.camera.Camera(pygame.camera.list_cameras()[0],(1920,1080))
+	cam = pygame.camera.Camera(pygame.camera.list_cameras()[0],(1440,1080))
 	cam.start()
 	cardImage = cam.get_image()
 	pygame.image.save(cardImage, filename)
