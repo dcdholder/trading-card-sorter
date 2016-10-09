@@ -9,79 +9,104 @@
 8. Go back to #2
 **/
 
-int ledPin = 13;
-int motorPin = X; //figure something out
+int exceptionPin = 13;
+int motorPin     = 3; //figure something out
+int dividerPin   = 14;
 
-int motorAverageVoltage = 1.5; //average volts out
+float arduinoVoltage = 5.0;
 
-int dividerUpperThreshold = 10; //find good values for these, maybe calculate at compile time - should be high enough for the webcam to take a good picture
-int dividerLowerThreshold = 1; 
+float baseResistance = 2.35e3;
+float transistorBeta = 3.6e2;
+float vbe            = 0.68;
 
-int timeInLightThreshold = 1000;
-int timeInDarkThreshold  = 1000;
+float currentMotorOn             = (arduinoVoltage-vbe) / baseResistance * transistorBeta;
+float desiredAverageMotorCurrent = 0.15;
+
+float dividerSupplyVoltage = 5.0;
+float Rd = 4.6e4; //fixed voltage in the photocell voltage divider
+
+float photocellVoltageFromResistance(float photocellResistance) {
+  return photocellResistance / (photocellResistance + Rd) * dividerSupplyVoltage;
+}
+
+float photocellResistanceLightThreshold = 5.6e3 * 2.0; //typically 43kOhm when in a lit room - threshold is twice that
+float photocellResistanceDarkThreshold  = 4.0e4 / 2.0; //typically 1.8MOhm when card covers aperture - threshold is half that
+
+float dividerVoltageLightThreshold = photocellVoltageFromResistance(photocellResistanceLightThreshold);
+float dividerVoltageDarkThreshold  = photocellVoltageFromResistance(photocellResistanceDarkThreshold);
+
+int timeInLightThreshold = 1000; //time in millis
+int timeInDarkThreshold  = 1000; //time in millis
 
 int sampleDelay = 5;
 
 void setup() {
   Serial.begin(9600);
-  startNotification();
-  waitForStartReply();
-  pinMode(ledPin, OUTPUT);
+  //comment out the next two lines to test motor control and sensing only
+  //startNotification();
+  //waitForStartReply();
+  
+  pinMode(exceptionPin, OUTPUT);
+  pinMode(motorPin, OUTPUT);
 }
 
 void loop() {
-	waitUntilConsistentlyLight(); //this is to prevent the camera from triggering in an initially-unlit room
+  waitUntilConsistentlyLight(); //this is to prevent the camera from triggering in an initially-unlit room
 
-	while(true) {
-		waitUntilConsistentlyDark();
-		requestPhoto();
-		waitForPhotoResponse();
-		activateMotor(); //for now, just activate the LED
-		waitUntilConsistentlyLight();
-		deactivateMotor(); //for now, just deactivate LED
-	}
+  while(true) {
+    waitUntilConsistentlyDark();
+    //comment out the next two lines to test motor control and sensing only
+    //requestPhoto();
+    //waitForPhotoResponse();
+    activateMotor(); //for now, just activate unidirectional motor
+    waitUntilConsistentlyLight();
+    deactivateMotor(); //for now, just deactivate unidirectional motor
+  }
 }
 
-float fromAnalogToVoltage(int pinReading) { return (float)pinReading * 5.0 / 1023.0; }
-float fromVoltageToPwm(float voltage)     { return (int)(voltage / 5.0 * 255); }
+bool isLight() {return fromAdcToVoltage(analogRead(dividerPin)) < dividerVoltageLightThreshold;}
+bool isDark()  {return fromAdcToVoltage(analogRead(dividerPin)) > dividerVoltageDarkThreshold;}
 
-void activateMotor()   { analogWrite(motorPin,fromVoltageToPwm(motorAverageVoltage)); }
+float fromAdcToVoltage(int pinReading) { return (float)pinReading * arduinoVoltage / 1023.0; }
+float dutyCycleToPwm(float dutyCycle)  { return (int)(dutyCycle * 255); }
+
+void activateMotor()   { analogWrite(motorPin,dutyCycleToPwm(desiredAverageMotorCurrent/currentMotorOn)); }
 void deactivateMotor() { analogWrite(motorPin,0); }
 
 void waitUntilConsistentlyDark(void) {
-	int timeInDark = 0;
-	int initialTimeInDark;
+  int timeInDark = 0;
+  int initialTimeInDark;
 
-	while(timeInDark<timeInDarkThreshold) {
-		delay(sampleDelay);
-		
-		if(toVoltage(analogRead(dividerPin))<dividerLowerThreshold) {
-			if(timeInDark==0) {
-				initialTimeInDark = millis();
-			}
-			timeInDark = millis()-initialTimeInDark;
-		} else {
-			timeInDark = 0;
-		}
-	}
+  while(timeInDark<timeInDarkThreshold) {
+    delay(sampleDelay);
+    
+    if(isDark()) {
+      if(timeInDark==0) {
+        initialTimeInDark = millis();
+      }
+      timeInDark = millis()-initialTimeInDark;
+    } else {
+      timeInDark = 0;
+    }
+  }
 }
 
 void waitUntilConsistentlyLight(void) {
-	int timeInLight = 0;
-	int initialTimeInLight;
-	
-	while(timeInLight<timeInLightThreshold) {
-		delay(sampleDelay);
-		
-		if(toVoltage(analogRead(dividerPin))>dividerUpperThreshold) {
-			if(timeInLight==0) {
-				initialTimeInLight = millis();
-			}
-			timeInLight = millis()-initialTimeInLight;
-		} else {
-			timeInLight = 0;
-		}
-	}
+  int timeInLight = 0;
+  int initialTimeInLight;
+  
+  while(timeInLight<timeInLightThreshold) {
+    delay(sampleDelay);
+    
+    if(isLight()) {
+      if(timeInLight==0) {
+        initialTimeInLight = millis();
+      }
+      timeInLight = millis()-initialTimeInLight;
+    } else {
+      timeInLight = 0;
+    }
+  }
 }
 
 void startNotification(void) {
@@ -92,8 +117,10 @@ void startNotification(void) {
 }
 
 void waitForStartReply(void) {
+  String replyString;
+
   while(1) {  
-    String replyString = "";
+    replyString = "";
     
     while(!Serial.available()) {}
     while(Serial.available()) {
@@ -111,27 +138,29 @@ void waitForStartReply(void) {
 }
 
 void requestPhoto() { //serial write
-	String photoRequest = "Say cheese!";
-	
-	Serial.println(photoRequest);
-	Serial.flush();
+  String photoRequest = "Say cheese";
+  
+  Serial.println(photoRequest);
+  Serial.flush();
 }
 
 void waitForPhotoResponse() { //serial read
-	while(1) {
-		String photoReplyString = "";
-		
-		while(!Serial.available()) {}
-		while(Serial.available()) {
-			delay(30);
-			if(Serial.available()>0) {
-				char c = Serial.read();
-				replyString += c;
-			}
-		}
-	}
-	
-	if(photoReplyString.equals("Cheese!")) {
-		return;
-	}
+  String photoReplyString;
+
+  while(1) {
+    photoReplyString = "";
+    
+    while(!Serial.available()) {}
+    while(Serial.available()) {
+      delay(30);
+      if(Serial.available()>0) {
+        char c = Serial.read();
+        photoReplyString += c;
+      }
+    }
+  }
+  
+  if(photoReplyString.equals("Cheese")) {
+    return;
+  }
 }
