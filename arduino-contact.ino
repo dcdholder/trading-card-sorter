@@ -10,7 +10,7 @@
 **/
 
 int exceptionPin = 13;
-int motorPin     = 3; //figure something out
+int motorPin     = 3;
 int dividerPin   = 14;
 
 float arduinoVoltage = 5.0;
@@ -23,14 +23,14 @@ float currentMotorOn             = (arduinoVoltage-vbe) / baseResistance * trans
 float desiredAverageMotorCurrent = 0.15;
 
 float dividerSupplyVoltage = 5.0;
-float Rd = 4.6e4; //fixed voltage in the photocell voltage divider
+float Rd = 4.6e4; //fixed resistance in the photocell voltage divider
 
 float photocellVoltageFromResistance(float photocellResistance) {
   return photocellResistance / (photocellResistance + Rd) * dividerSupplyVoltage;
 }
 
-float photocellResistanceLightThreshold = 5.6e3 * 2.0; //typically 43kOhm when in a lit room - threshold is twice that
-float photocellResistanceDarkThreshold  = 4.0e4 / 2.0; //typically 1.8MOhm when card covers aperture - threshold is half that
+float photocellResistanceLightThreshold = 5.6e3 * 2.0; //typical resistance measured when tray is exposed to light (times 2)
+float photocellResistanceDarkThreshold  = 4.0e4 / 2.0; //typical resistance measured when tray is covered (divided by 2)
 
 float dividerVoltageLightThreshold = photocellVoltageFromResistance(photocellResistanceLightThreshold);
 float dividerVoltageDarkThreshold  = photocellVoltageFromResistance(photocellResistanceDarkThreshold);
