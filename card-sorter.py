@@ -6,119 +6,220 @@ import json
 import PIL
 import os
 import sys
+import serial
+import serial.tools.list_ports
+import time
 
-CARD_NAMES_JSON_FILENAME = "Resources/AllCards.json"
+class CardReader:
+	CARD_NAMES_JSON_FILENAME = "Resources/AllCards.json"
 
-FOCUS = 250
+	MAX_NUM_TRIES = 3
 
-TEXT_BOX_X_PERCENT = 0.8900
-TEXT_BOX_Y_PERCENT = 0.0476
+	TEXT_BOX_X_PERCENT = 0.8900
+	TEXT_BOX_Y_PERCENT = 0.0476
 
-TEXT_BOX_WIDTH_PERCENT  = 0.0568
-TEXT_BOX_HEIGHT_PERCENT = 0.9048
+	TEXT_BOX_WIDTH_PERCENT  = 0.0568
+	TEXT_BOX_HEIGHT_PERCENT = 0.9048
 
-PERCENT_MATCH_THRESHOLD = 0.5
+	PERCENT_MATCH_THRESHOLD = 0.6
 
-def takePhoto( filename ):
-	pygame.camera.init()
-	cam = pygame.camera.Camera(pygame.camera.list_cameras()[0],(1440,1080))
-	cam.start()
-	cardImage = cam.get_image()
-	pygame.image.save(cardImage, filename)
-	pygame.camera.quit()
+	RIGHT_CARDS = ["Mountain","Plains","Forest"]
+	LEFT_CARDS  = ["Swamp","Island"]
+
+	ARDUINO_VID = 2341
+
+	def __init__(self):
+		self.cam = self.initCamera()
+		self.arduinoPort = self.getArduinoPort()
+		self.arduinoHandshake()
+		
+		self.CARD_NAMES = self.getCardNamesFromJson()
+
+	def initCamera(self):
+		self.quitCamera()
+		pygame.camera.init()
+		cam = pygame.camera.Camera(pygame.camera.list_cameras()[0],(1920,1080))
+		return cam
+
+	def quitCamera( self ):
+		pygame.camera.quit()
+
+	def getArduinoPort(self):
+		ports = list(serial.tools.list_ports.comports())
+
+		portFound = False
+		for portDesignation, description, address in ports:
+			if str(self.ARDUINO_VID) in address:
+				portName = portDesignation
+				port = serial.Serial(portName,9600,timeout=1)
+				port.flushInput()
+				portFound = True
+				break
+
+		if portFound==False:
+			raise ValueError("Could not find an Arduino on any port")
+			
+		return port
+
+	def arduinoHandshake(self):
+		print("Attempting to handshake Arduino")
+
+		gotLine = False
+		while gotLine==False:
+			line = self.arduinoPort.readline()[:-2] #apparently the Arduino uses Windows-style newlines
 	
-	os.system("v4l2-ctl -d 0 -c focus_auto=1")
-	os.system("v4l2-ctl -d 0 -c focus_absolute=0")
+			if line=="Arduino ready":
+				self.arduinoPort.write("PC ready")
+				print "Arduino connected"
+				gotLine = True
 
-def cleanImage( inputFilename, outputFilename ):
-	deskewCmd = "convert +repage -background white -fuzz 80% -deskew 40% -trim " + inputFilename + " " + outputFilename
-	os.system(deskewCmd)
+	def takePhoto( self, filename ):
+		self.cam.start()
+		cardImage = self.cam.get_image()
+		self.cam.stop()
+		pygame.image.save(cardImage, filename)
 
-#TODO: use jpgs instead so that wand doesn't complain (pngs have a weird resolution scheme)
-#TODO: rotate and crop according to initial orientation (look at image dimensions)
-def cropToTextbox( inputFilename, outputFilename ):
-	img = wand.image.Image(filename=inputFilename)
+	def cleanImage( self, inputFilename, outputFilename ):
+		initialCropFilename = "sample-card-initial-crop.png"
 
-	cropX = int(img.width  * TEXT_BOX_X_PERCENT)
-	cropY = int(img.height * TEXT_BOX_Y_PERCENT)
-	cropWidth  = int(img.width  * TEXT_BOX_WIDTH_PERCENT)
-	cropHeight = int(img.height * TEXT_BOX_HEIGHT_PERCENT)
+		#crop to just part of the area with the platform, then deskew to collect the card image
+		newHeight = int(1080*0.8);
+		newWidth  = int(1920*(0.67-0.05));
+
+		heightOffset = int(1080*0.1);
+		widthOffset  = int(1080*0.05);
+
+		cropCmd   = "convert +repage -crop " + str(newWidth) + "x" + str(newHeight) + "+" + str(widthOffset) + "+" + str(heightOffset) + " " + inputFilename + " " + initialCropFilename
+		os.system(cropCmd)
 	
-	#TODO: figure out how to replace the system call with a 'wand' call
-	cropCmd = "convert +repage -crop " + str(cropWidth) + "x" + str(cropHeight) + "+" + str(cropX) + "+" + str(cropY) + " " + inputFilename + " " + outputFilename
-	os.system(cropCmd)
-	
-	rotateCmd = "convert " + outputFilename + " -rotate -90 " + outputFilename
-	os.system(rotateCmd)
+		deskewCmd = "convert +repage -background white -fuzz 80% -deskew 40% -trim " + initialCropFilename + " " + outputFilename
+		os.system(deskewCmd)
 
-def ocrImage( inputFilename ):
-	return pytesseract.image_to_string(PIL.Image.open(inputFilename))
+	#TODO: use jpgs instead so that wand doesn't complain (pngs have a weird resolution scheme)
+	#TODO: rotate and crop according to initial orientation (look at image dimensions)
+	def cropToTextbox( self, inputFilename, outputFilename ):
+		img = wand.image.Image(filename=inputFilename)
 
-#TODO: heavily document this - it's complicated!
-#TODO: work on improving the run time
-def matchOcr( ocrText, cardNames ):
-	largestMatchingCount = 0
-	bestMatchingName = ""
+		cropX = int(img.width  * self.TEXT_BOX_X_PERCENT)
+		cropY = int(img.height * self.TEXT_BOX_Y_PERCENT)
+		cropWidth  = int(img.width  * self.TEXT_BOX_WIDTH_PERCENT)
+		cropHeight = int(img.height * self.TEXT_BOX_HEIGHT_PERCENT)
 	
-	for ocrLine in ocrText.splitlines():
-		if ocrLine in cardNames: #the elusive perfect match
-			bestMatchingName     = ocrLine
-			largestMatchingCount = ocrLine
-			break
+		#TODO: figure out how to replace the system call with a 'wand' call
+		cropCmd = "convert +repage -crop " + str(cropWidth) + "x" + str(cropHeight) + "+" + str(cropX) + "+" + str(cropY) + " " + inputFilename + " " + outputFilename
+		os.system(cropCmd)
 	
-		for cardName in cardNames:
-			for startingIndex in range(-len(cardName)+1,len(ocrLine)):
-				if startingIndex + len(cardName) <= len(ocrLine):
-					endingIndex = startingIndex + len(cardName) - 1
-				else:
-					endingIndex = len(ocrLine) - 1
+		rotateCmd = "convert " + outputFilename + " -rotate -90 " + outputFilename
+		os.system(rotateCmd)
+
+	def ocrImage( self, inputFilename ):
+		return pytesseract.image_to_string(PIL.Image.open(inputFilename))
+
+	#TODO: heavily document this - it's complicated!
+	#TODO: work on improving the run time
+	def matchOcr( self, ocrText, cardNames ):
+		largestMatchingCount = 0
+		bestMatchingName = ""
+	
+		for ocrLine in ocrText.splitlines():
+			if ocrLine in cardNames: #the elusive perfect match
+				bestMatchingName     = ocrLine
+				largestMatchingCount = ocrLine
+				break
+	
+			for cardName in cardNames:
+				for startingIndex in range(-len(cardName)+1,len(ocrLine)):
+					if startingIndex + len(cardName) <= len(ocrLine):
+						endingIndex = startingIndex + len(cardName) - 1
+					else:
+						endingIndex = len(ocrLine) - 1
 				
-				if startingIndex > 0:
-					ocrSubstring = ocrLine[startingIndex:endingIndex+1]
-				else:
-					ocrSubstring = "@" * -startingIndex + ocrLine[0:endingIndex+1] #assume few to no cards use the symbol '@' to avoid matching prepended symbols
-				ocrSubstring = ocrSubstring.replace(" ","@") #matching spaces causes headaches with cards with short names
+					if startingIndex > 0:
+						ocrSubstring = ocrLine[startingIndex:endingIndex+1]
+					else:
+						ocrSubstring = "@" * -startingIndex + ocrLine[0:endingIndex+1] #assume few to no cards use the symbol '@' to avoid matching prepended symbols
+					ocrSubstring = ocrSubstring.replace(" ","@") #matching spaces causes headaches with cards with short names
 				
-				matchingCount = 0
-				for index in range(0,endingIndex-startingIndex+1): #the +1 is important!
-					if ocrSubstring[index]==cardName[index]:
-						matchingCount+=1	
+					matchingCount = 0
+					for index in range(0,endingIndex-startingIndex+1): #the +1 is important!
+						if ocrSubstring[index]==cardName[index]:
+							matchingCount+=1	
 						
-				if matchingCount > largestMatchingCount:
-					largestMatchingCount = matchingCount
-					bestMatchingName     = cardName
-				elif (matchingCount == largestMatchingCount) and (len(cardName) < len(bestMatchingName)): #don't want to match e.g. Island as Turri Island
-					bestMatchingName = cardName
+					if matchingCount > largestMatchingCount:
+						largestMatchingCount = matchingCount
+						bestMatchingName     = cardName
+					elif (matchingCount == largestMatchingCount) and (len(cardName) < len(bestMatchingName)): #don't want to match e.g. Island as Turri Island
+						bestMatchingName = cardName
 					
-	if int(len(bestMatchingName) * PERCENT_MATCH_THRESHOLD) < largestMatchingCount:
-		return bestMatchingName
-	else:
-		raise ValueError("No card names matched OCR output to within " + str(PERCENT_MATCH_THRESHOLD))
+		if int(len(bestMatchingName) * self.PERCENT_MATCH_THRESHOLD) < largestMatchingCount:
+			return bestMatchingName
+		else:
+			raise ValueError("No card names matched OCR output")
 
-def getCardNamesFromJson():
-	nameDataFile = open(CARD_NAMES_JSON_FILENAME)
-	nameData = json.load(nameDataFile)
-	cardNames = nameData.keys()
-	cardNames = set(cardNames)
+	def getCardNamesFromJson(self):
+		nameDataFile = open(self.CARD_NAMES_JSON_FILENAME)
+		nameData = json.load(nameDataFile)
+		cardNames = nameData.keys()
+		cardNames = set(cardNames)
 	
-	return cardNames
+		return cardNames
 
-def printCardUnderWebcam():
-	takePhoto("sample-card.png")
-	cleanImage("sample-card.png","cleaned-sample-card.png")
-	cropToTextbox("cleaned-sample-card.png","cropped-cleaned-sample-card.png")
-	ocrOut = ocrImage("cropped-cleaned-sample-card.png")
-	cardNames = getCardNamesFromJson()
+	def printCardsUnderWebcam(self):
+		while True:
+			self.waitForPhotoRequest()
+			cardName = self.printCardUnderWebcam()
+			self.sendToPile(self.decideOnDirection(cardName))
+			#self.quitCamera
 
-	print("OCR text: " + ocrOut)
-	try:
-		cardName = matchOcr(ocrOut,cardNames)
-		print("Your card is: '" + cardName + "'")
-	except ValueError as e:
-		print(str(e))
-	except:
-		print("Unexpected error")
-		raise
+	def printCardUnderWebcam(self,tryNumber=1):
+		self.takePhoto("sample-card.png")
+		self.cleanImage("sample-card.png","cleaned-sample-card.png")
+		self.cropToTextbox("cleaned-sample-card.png","cropped-cleaned-sample-card.png")
+		ocrOut = self.ocrImage("cropped-cleaned-sample-card.png")
+
+		print("OCR attempt #" + str(tryNumber) + ":")
+		print("OCR text: " + ocrOut)
+		try:
+			cardName = self.matchOcr(ocrOut,self.CARD_NAMES)
+			print("Your card is: '" + cardName + "'")
+			print("It will be placed in the " + self.decideOnDirection(cardName) + " pile")
+			print("")
+		except ValueError as e:
+			if tryNumber < self.MAX_NUM_TRIES:
+				cardName = self.printCardUnderWebcam(tryNumber+1)
+			else:
+				print("Could not read card after " + str(tryNumber) + " attempts")
+				print("")
+				return "error"
+		except:
+			print("Unexpected error")
+			raise
+			
+		return cardName
 	
-printCardUnderWebcam()
+	def decideOnDirection(self,cardName):
+		if cardName in self.RIGHT_CARDS:
+			return "right"
+		elif cardName in self.LEFT_CARDS:
+			return "left"
+		else:
+			return "error"
+			
+	def waitForPhotoRequest(self):
+		print("Waiting for next card")
 
+		gotLine = False
+		while gotLine==False:
+			line = self.arduinoPort.readline()[:-2] #apparently the Arduino uses Windows-style newlines
+	
+			if line=="Say cheese":
+				print "Next card ready"
+				gotLine = True
+	
+	def sendToPile(self, pile):
+		time.sleep(0.1)
+		self.arduinoPort.write(pile)
+		
+		
+cardReader = CardReader()
+cardReader.printCardsUnderWebcam()
